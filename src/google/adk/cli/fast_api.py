@@ -49,6 +49,50 @@ from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
 
+
+from mcp.client.session import ClientSession
+from pydantic_core import core_schema
+import types
+from PIL import Image
+
+# Workaround for Pydantic schema generation errors with MCP and PIL types
+# See: https://github.com/google/adk-python/issues/3925
+ClientSession.__get_pydantic_core_schema__ = classmethod(  
+    lambda cls, s, h: core_schema.any_schema()
+)
+Image.Image.__get_pydantic_core_schema__ = classmethod(  
+    lambda cls, s, h: core_schema.any_schema()
+)
+
+# Monkey-patch Pydantic's schema generator to handle ALL unknown types gracefully
+# This is a workaround for google-adk + Pydantic 2.12+ compatibility issues
+# See: https://github.com/google/adk-python/issues/3925
+from pydantic._internal._generate_schema import GenerateSchema
+from pydantic.errors import PydanticSchemaGenerationError, PydanticInvalidForJsonSchema
+from pydantic.json_schema import GenerateJsonSchema
+
+# Patch 1: Schema generation - catch unknown types
+_original_unknown_type_schema = GenerateSchema._unknown_type_schema
+
+def _patched_unknown_type_schema(self, obj):
+    """Catch ANY unknown type and return any_schema()."""
+    try:
+        return _original_unknown_type_schema(self, obj)
+    except PydanticSchemaGenerationError:
+        return core_schema.any_schema()
+
+GenerateSchema._unknown_type_schema = _patched_unknown_type_schema  
+
+# Patch 2: JSON schema generation - catch types that can't be serialized to JSON schema
+_original_handle_invalid = GenerateJsonSchema.handle_invalid_for_json_schema
+
+def _patched_handle_invalid(self, schema, error_info):
+    """Instead of raising, return a generic object schema."""
+    # Return a generic "any" JSON schema instead of raising an error
+    return {}  # Empty schema means "any value is valid" in JSON Schema
+
+GenerateJsonSchema.handle_invalid_for_json_schema = _patched_handle_invalid  
+
 logger = logging.getLogger("google_adk." + __name__)
 
 _LAZY_SERVICE_IMPORTS: dict[str, str] = {
